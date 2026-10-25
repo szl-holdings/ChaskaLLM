@@ -1,0 +1,17 @@
+cff-version: 1.2.0
+title: ChaskaLLM
+message: If you use this software, please cite it.
+type: software
+authors:
+  - family-names: Lutar
+    given-names: Stephen
+    affiliation: SZL Holdings Inc
+repository-code: https://github.com/szl-holdings/ChaskaLLM
+url: https://huggingface.co/SZLHOLDINGS/ChaskaLLM
+license: Apache-2.0
+keywords:
+  - chaskallm
+  - gguf
+  - cpu-inference
+  - soft-shield
+  - szl-holdings

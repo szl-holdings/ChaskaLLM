@@ -1,0 +1,12 @@
+ChaskaLLM packaging and house API code in this repository are offered under Apache-2.0
+(see LICENSE), except where a file states otherwise.
+
+Underlying model weights referenced by this project are derived from
+Qwen/Qwen2.5-3B-Instruct. Upstream Hugging Face metadata for that base currently
+declares license:other / license_name:qwen-research. Packaging-code Apache-2.0 does
+NOT re-license the upstream weights. Downstream redistribution of GGUF/quantized
+weights must follow the applicable Qwen research / upstream notices in addition to
+this repository's Apache-2.0 for code.
+
+Weights live on Hugging Face: https://huggingface.co/SZLHOLDINGS/ChaskaLLM
+This GitHub repository intentionally omits large binary weights; link by revision/hash.

@@ -1,0 +1,127 @@
+{
+  "fails": [
+    "chat_fast_1b"
+  ],
+  "results": [
+    {
+      "name": "health",
+      "ok": true,
+      "detail": {
+        "ms": 7,
+        "body": "{\"ok\": true, \"product\": \"ChaskaLLM\", \"gpu\": false, \"n_gpu_layers\": 0, \"default_model\": \"3b\", \"model_path\": \"/opt/alloyscape/vendor/llama.cpp/models/chaskaclaw-cpu-3b.Q4_K_M.gguf\", \"models\": {\"1.1b\": true, \"tiny\": true, \"3b\": true, \"default\": true, \"7b\": true}, \"endpoints\": [\"/health\", \"/v1/info\", \"/v1/chat\", \"/v1/tokenless/prove\", \"/api/v1/info\", \"/api/v1/chat\", \"/api/v1/tokenless/prove\"]}"
+      }
+    },
+    {
+      "name": "info_gpu_false",
+      "ok": true,
+      "detail": {
+        "ms": 0,
+        "product": "ChaskaLLM",
+        "gpu": false,
+        "n_gpu_layers": 0,
+        "base_model": "Qwen/Qwen2.5-3B-Instruct",
+        "quantization": "Q4_K_M",
+        "default_model": "3b",
+        "honest_boundary": "House deployment + Q4_K_M packaging of Qwen2.5-Instruct. Not a from-scratch SZL base train. Not an OpenShell sandbox (th"
+      }
+    },
+    {
+      "name": "tokenless_prove",
+      "ok": true,
+      "detail": {
+        "ms": 1,
+        "body": "{\"ok\": true, \"mode\": \"tokenless_no_llm\", \"product_lanes\": {\"gpu_less_llm\": \"ChaskaLLM\", \"tokenless\": \"Qiwicha+ZTFI\"}, \"checks\": {\"coverage_file\": true, \"think_seats_110\": true, \"living_wire_111\": true, \"whole_tribe\": true, \"p3_sig\": true, \"p4_sig\": true, \"anchor_sig\": true, \"qde_sig\": true, \"loop_scoreboard\": true, \"loop_24_24\": true, \"qiwicha_manifest\": true, \"router_doc\": true}, \"coverage\": {\"think_seats\": 111, \"wired_after\": 111, \"living_wire\": 111, \"whole_tribe\": true, \"stamp\": \"20261025T172"
+      }
+    },
+    {
+      "name": "gguf_3b",
+      "ok": true,
+      "detail": {
+        "path": "/opt/alloyscape/vendor/llama.cpp/models/chaskaclaw-cpu-3b.Q4_K_M.gguf",
+        "bytes": 2104932768
+      }
+    },
+    {
+      "name": "gguf_1.1b",
+      "ok": true,
+      "detail": {
+        "path": "/opt/alloyscape/vendor/llama.cpp/models/chaskaclaw-cpu-1.1b.Q4_K_M.gguf",
+        "bytes": 668788096
+      }
+    },
+    {
+      "name": "chat_exact",
+      "ok": true,
+      "detail": {
+        "ms": 2778,
+        "tps": 48.2,
+        "model": "3b",
+        "text": "CHASKA_SMOKE_OK",
+        "reasons": []
+      }
+    },
+    {
+      "name": "chat_identity_no_gpu",
+      "ok": true,
+      "detail": {
+        "ms": 2939,
+        "tps": 41.1,
+        "model": "3b",
+        "text": "No",
+        "reasons": []
+      }
+    },
+    {
+      "name": "chat_gpu_no",
+      "ok": true,
+      "detail": {
+        "ms": 2671,
+        "text": "NO"
+      }
+    },
+    {
+      "name": "chat_estate_bullets",
+      "ok": true,
+      "detail": {
+        "ms": 3742,
+        "tps": 48.2,
+        "model": "3b",
+        "text": "- Use for text summarization tasks.\n- Utilize for fine-tuning language models for custom estate-specific use cases.\n- Apply for text classification tasks, such as estate property type detection.",
+        "reasons": []
+      }
+    },
+    {
+      "name": "chat_fast_1b",
+      "ok": false,
+      "detail": {
+        "ms": 977,
+        "text": "User: Reply with the first letter only.\nAssistant: <|user|>\nCan you suggest"
+      }
+    },
+    {
+      "name": "public_www.chaskaclaw.com",
+      "ok": true,
+      "detail": {
+        "ms": 8,
+        "product": "ChaskaLLM",
+        "gpu": false,
+        "n_gpu_layers": 0,
+        "base_model": "Qwen/Qwen2.5-3B-Instruct",
+        "default_model": "3b"
+      }
+    },
+    {
+      "name": "public_alloyszlholdings.com",
+      "ok": true,
+      "detail": {
+        "ms": 4,
+        "product": "ChaskaLLM",
+        "gpu": false,
+        "n_gpu_layers": 0,
+        "base_model": "Qwen/Qwen2.5-3B-Instruct",
+        "default_model": "3b"
+      }
+    }
+  ],
+  "pass": false
+}

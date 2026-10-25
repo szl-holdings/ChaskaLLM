@@ -1,0 +1,12 @@
+{
+  "product": "ChaskaLLM",
+  "scope": "3B Soft Shield default lane",
+  "publication_badge": "PASS_3B_ONLY",
+  "full_receipt_pass": false,
+  "fails": [
+    "chat_fast_1b"
+  ],
+  "note": "Stephen/Dot finding: full SMOKE-HQ-LATEST may include failed 1.1B lane. Public PASS badge scoped to 3B checks only. Preserve failed cases.",
+  "hf_model": "SZLHOLDINGS/ChaskaLLM",
+  "stamp": "20261025T235716Z"
+}

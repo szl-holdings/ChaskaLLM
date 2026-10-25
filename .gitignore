@@ -1,0 +1,12 @@
+*.gguf
+*.bin
+*.safetensors
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+*.log
+/data/
+/uploads/
+/images/
