@@ -13,6 +13,7 @@ import os
 import re
 import secrets
 import subprocess
+import threading
 import time
 import urllib.parse
 from datetime import datetime, timezone
@@ -41,14 +42,34 @@ QICH = Path("/opt/alloyscape/shared/bridge/rosa-claw/qiwicha_manifest.qich")
 LOOP_SB = Path("/opt/alloyscape/builder-sandboxes/hermesnous/projects/wo-recursive-spacetime-loop-20261024T235435Z") / "scoreboard.json"
 
 
-KEYS_PATH = Path("/opt/alloyscape/data/chaskallm/api-keys.json")
+DATA_DIR = Path(os.environ.get("CHASKA_DATA_DIR", "/opt/alloyscape/data/chaskallm"))
+KEYS_PATH = DATA_DIR / "api-keys.json"
 KEYS_PATH.parent.mkdir(parents=True, exist_ok=True)
-UPLOAD_DIR = Path("/opt/alloyscape/data/chaskallm/uploads")
+UPLOAD_DIR = DATA_DIR / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 UPLOAD_META = UPLOAD_DIR / "index.json"
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
-IMAGE_DIR = Path("/opt/alloyscape/data/chaskallm/images")
+IMAGE_DIR = DATA_DIR / "images"
 IMAGE_DIR.mkdir(parents=True, exist_ok=True)
+
+# Public-edge abuse bounds. Env-tunable; a limit of 0 denies (fails closed).
+# Per-IP limits need nginx to send X-Real-IP (or X-Forwarded-For) — without it every
+# proxied caller shares the loopback bucket, which is exempt. The concurrency slots and
+# the image daily cap hold regardless of client identity.
+MAX_JSON_BYTES = int(os.environ.get("CHASKA_MAX_JSON_BYTES", str(1024 * 1024)))
+MAX_N_PREDICT = int(os.environ.get("CHASKA_MAX_N_PREDICT", "512"))
+MAX_CONCURRENT_GEN = int(os.environ.get("CHASKA_MAX_CONCURRENT_GEN", "2"))
+GEN_WAIT_S = float(os.environ.get("CHASKA_GEN_WAIT_S", "2"))
+IMAGE_DAILY_CAP = int(os.environ.get("CHASKA_IMAGE_DAILY_CAP", "50"))
+IMAGE_PER_IP_HOUR = int(os.environ.get("CHASKA_IMAGE_PER_IP_HOUR", "5"))
+CHAT_PER_IP_MINUTE = int(os.environ.get("CHASKA_CHAT_PER_IP_MINUTE", "20"))
+KEY_MINT_PER_IP_HOUR = int(os.environ.get("CHASKA_KEY_MINT_PER_IP_HOUR", "3"))
+UPLOAD_PER_IP_HOUR = int(os.environ.get("CHASKA_UPLOAD_PER_IP_HOUR", "30"))
+IMAGE_MIN_SIDE, IMAGE_MAX_SIDE = 256, 1024
+# Only these upload types render inline from /v1/files; everything else downloads as
+# application/octet-stream so an uploaded HTML/SVG file cannot run script on our origin.
+INLINE_SAFE_TYPES = {"image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp", "text/plain"}
+LOOPBACK = ("127.0.0.1", "::1")
 NVIDIA_FLUX_ENV = Path("/opt/alloyscape/secrets/nvidia-flux-amber.env")
 NVIDIA_BUILD_PACK = Path("/opt/alloyscape/secrets/nvidia-build-rosa-video-audio-pack.env")
 FLUX_INVOKE_URL = "https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux.1-schnell"
@@ -211,12 +232,82 @@ def verify_api_key(header_val: str | None) -> dict | None:
   return {"ok": False, "error": "invalid_api_key"}
 
 
-def client_is_local(handler) -> bool:
+def client_ip(handler) -> str:
+  """Caller address. Forwarding headers are trusted only from a loopback peer (nginx)."""
   try:
-    ip = handler.client_address[0]
+    peer = handler.client_address[0]
   except Exception:
-    ip = ""
-  return ip in ("127.0.0.1", "::1")
+    peer = ""
+  if peer in LOOPBACK:
+    real = (handler.headers.get("X-Real-IP") or "").strip()
+    if real:
+      return real
+    hops = [h.strip() for h in (handler.headers.get("X-Forwarded-For") or "").split(",") if h.strip()]
+    if hops:
+      return hops[-1]
+  return peer
+
+
+def client_is_local(handler) -> bool:
+  return client_ip(handler) in LOOPBACK
+
+
+class RateWindow:
+  """Sliding-window counter per (bucket, caller). In memory; resets on restart."""
+
+  def __init__(self) -> None:
+    self._hits: dict[tuple[str, str], list[float]] = {}
+    self._lock = threading.Lock()
+
+  def allow(self, bucket: str, who: str, limit: int, window_s: float, now: float | None = None) -> bool:
+    if limit <= 0:
+      return False
+    now = time.monotonic() if now is None else now
+    with self._lock:
+      hits = [t for t in self._hits.get((bucket, who), []) if now - t < window_s]
+      if len(hits) >= limit:
+        self._hits[(bucket, who)] = hits
+        return False
+      hits.append(now)
+      self._hits[(bucket, who)] = hits
+      return True
+
+
+class DailyCap:
+  """Global per-UTC-day counter (bounds spend on paid bridges)."""
+
+  def __init__(self, cap: int) -> None:
+    self.cap = cap
+    self._day = ""
+    self._used = 0
+    self._lock = threading.Lock()
+
+  def take(self) -> bool:
+    day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    with self._lock:
+      if day != self._day:
+        self._day, self._used = day, 0
+      if self._used >= self.cap:
+        return False
+      self._used += 1
+      return True
+
+  def used(self) -> int:
+    with self._lock:
+      return self._used
+
+
+RATE = RateWindow()
+IMAGE_CAP = DailyCap(IMAGE_DAILY_CAP)
+GEN_SLOTS = threading.BoundedSemaphore(max(1, MAX_CONCURRENT_GEN))
+
+
+def _int_param(value, default: int, lo: int, hi: int) -> int:
+  try:
+    n = int(value)
+  except (TypeError, ValueError):
+    return default
+  return max(lo, min(n, hi))
 
 
 SIGS = {
@@ -372,7 +463,11 @@ def generate_image(prompt: str, width: int = 1024, height: int = 1024, steps: in
   clean = (prompt or "").strip()[:1200]
   if not clean:
     return {"ok": False, "error": "prompt_required", "capability": "chaska.image.fast"}
-  body = json.dumps({"prompt": clean, "width": int(width), "height": int(height), "seed": 0, "steps": int(steps)}).encode()
+  if not IMAGE_CAP.take():
+    return {"ok": False, "error": "image_daily_cap_reached", "capability": "chaska.image.fast"}
+  width = _int_param(width, 1024, IMAGE_MIN_SIDE, IMAGE_MAX_SIDE)
+  height = _int_param(height, 1024, IMAGE_MIN_SIDE, IMAGE_MAX_SIDE)
+  body = json.dumps({"prompt": clean, "width": width, "height": height, "seed": 0, "steps": int(steps)}).encode()
   req = urllib.request.Request(
     FLUX_INVOKE_URL,
     data=body,
@@ -482,10 +577,14 @@ def whisper(prompt: str, n_predict: int = 64, model_key: str | None = None) -> d
       "-st", "--simple-io", "--no-display-prompt", "--no-jinja", "--perf", "--log-disable",
     ]
 
+  if not GEN_SLOTS.acquire(timeout=GEN_WAIT_S):
+    return {"ok": False, "error": "busy", "model_key": key, "product": "ChaskaLLM", "gpu": False}
   try:
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s)
   except subprocess.TimeoutExpired:
     return {"ok": False, "error": "timeout", "model_key": key, "product": "ChaskaLLM", "gpu": False}
+  finally:
+    GEN_SLOTS.release()
   out = proc.stdout or ""
   err = proc.stderr or ""
   gen = _clean_gen(out, user_prompt=prompt)
@@ -668,10 +767,14 @@ class Handler(BaseHTTPRequestHandler):
       if not rec or not Path(rec.get("path") or "").is_file():
         return self._json(404, {"ok": False, "error": "file_not_found"})
       data = Path(rec["path"]).read_bytes()
+      media = (rec.get("mediaType") or "").split(";")[0].strip().lower()
+      inline = media in INLINE_SAFE_TYPES
       self.send_response(200)
-      self.send_header("Content-Type", rec.get("mediaType") or "application/octet-stream")
+      self.send_header("Content-Type", media if inline else "application/octet-stream")
       self.send_header("Content-Length", str(len(data)))
-      self.send_header("Content-Disposition", f'inline; filename="{rec.get("filename") or fid}"')
+      self.send_header("Content-Disposition", f'{"inline" if inline else "attachment"}; filename="{rec.get("filename") or fid}"')
+      self.send_header("X-Content-Type-Options", "nosniff")
+      self.send_header("Content-Security-Policy", "default-src 'none'; img-src 'self'; sandbox")
       self.send_header("Access-Control-Allow-Origin", "*")
       self.send_header("Cache-Control", "private, max-age=3600")
       self.end_headers()
@@ -681,9 +784,21 @@ class Handler(BaseHTTPRequestHandler):
 
   def do_POST(self):
     path = normalize_api_path(urllib.parse.urlparse(self.path).path)
-    length = int(self.headers.get("Content-Length") or 0)
+    try:
+      length = int(self.headers.get("Content-Length") or 0)
+    except ValueError:
+      return self._json(400, {"ok": False, "error": "bad_content_length"})
+    # Check the declared size before reading, so an oversized body never lands in memory.
+    max_body = MAX_UPLOAD_BYTES if path == "/v1/upload" else MAX_JSON_BYTES
+    if length < 0 or length > max_body:
+      self.close_connection = True
+      return self._json(413, {"ok": False, "error": "body_too_large", "max_bytes": max_body})
     raw = self.rfile.read(length) if length else b""
+    who = client_ip(self)
+    local = who in LOOPBACK
     if path == "/v1/upload":
+      if not local and not RATE.allow("upload", who, UPLOAD_PER_IP_HOUR, 3600):
+        return self._json(429, {"ok": False, "error": "rate_limited", "limit": "uploads per hour"})
       qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query or "")
       name = (qs.get("name") or ["file"])[0]
       ctype = self.headers.get("Content-Type") or "application/octet-stream"
@@ -698,6 +813,8 @@ class Handler(BaseHTTPRequestHandler):
     if path == "/v1/tokenless/prove":
       return self._json(200, tokenless_prove())
     if path == "/v1/keys":
+      if not local and not RATE.allow("keys", who, KEY_MINT_PER_IP_HOUR, 3600):
+        return self._json(429, {"ok": False, "error": "rate_limited", "limit": "key mints per hour"})
       label = str(data.get("label") or "browser")[:80]
       scope = str(data.get("scope") or "chat")[:40]
       return self._json(200, mint_api_key(label=label, scope=scope))
@@ -709,9 +826,9 @@ class Handler(BaseHTTPRequestHandler):
       prompt = (data.get("prompt") or data.get("message") or data.get("text") or "").strip()
       if not prompt:
         return self._json(400, {"ok": False, "error": "prompt_required"})
-      width = int(data.get("width") or 1024)
-      height = int(data.get("height") or 1024)
-      out = generate_image(prompt, width=width, height=height)
+      if not local and not RATE.allow("images", who, IMAGE_PER_IP_HOUR, 3600):
+        return self._json(429, {"ok": False, "error": "rate_limited", "limit": "images per hour"})
+      out = generate_image(prompt, width=data.get("width"), height=data.get("height"))
       out["auth"] = "api_key" if (key_info and key_info.get("ok")) else ("local" if client_is_local(self) else "public_try")
       return self._json(200 if out.get("ok") else 502, out)
     if path == "/v1/chat":
@@ -719,6 +836,13 @@ class Handler(BaseHTTPRequestHandler):
       key_info = verify_api_key(auth) if auth else None
       if auth and key_info and not key_info.get("ok"):
         return self._json(401, {"ok": False, "error": "invalid_api_key"})
+      if not local and not RATE.allow("chat", who, CHAT_PER_IP_MINUTE, 60):
+        return self._json(429, {"ok": False, "error": "rate_limited", "limit": "chat requests per minute"})
+      keyed = bool(key_info and key_info.get("ok"))
+      model_key = str(data.get("model") or data.get("model_key") or DEFAULT_MODEL_KEY)
+      # 7b costs 16 threads for up to 300 s per call: keyed callers only, never anonymous.
+      if model_key.lower() == "7b" and not keyed:
+        return self._json(403, {"ok": False, "error": "api_key_required_for_7b", "hint": "use model=3b or send Authorization: Bearer chaska_…"})
       prompt = (data.get("prompt") or data.get("message") or "").strip()
       if not prompt and isinstance(data.get("messages"), list):
         for mmsg in reversed(data.get("messages") or []):
@@ -748,13 +872,15 @@ class Handler(BaseHTTPRequestHandler):
       # Image intent → year-1 FLUX bridge + short mouth caption
       force_image = bool(data.get("image") or data.get("generate_image"))
       if force_image or is_image_intent(user_raw):
+        if not local and not RATE.allow("images", who, IMAGE_PER_IP_HOUR, 3600):
+          return self._json(429, {"ok": False, "error": "rate_limited", "limit": "images per hour"})
         img_prompt = extract_image_prompt(user_raw)
         img = generate_image(img_prompt)
         if img.get("ok"):
           caption = whisper(
             f"One short friendly sentence confirming you created this image: {img_prompt[:160]}",
             n_predict=48,
-            model_key=data.get("model") or DEFAULT_MODEL_KEY,
+            model_key=model_key,
           )
           text = (caption.get("text") or "").strip() or img.get("text")
           out = {
@@ -787,13 +913,12 @@ class Handler(BaseHTTPRequestHandler):
           "capability": "chaska.image.fast",
           "auth": "api_key" if (key_info and key_info.get("ok")) else ("local" if client_is_local(self) else "public_try"),
         })
-      n = int(data.get("n_predict") or data.get("max_tokens") or 64)
-      model_key = data.get("model") or data.get("model_key")
-      if not model_key:
-        model_key = DEFAULT_MODEL_KEY
-      if str(model_key).lower() == "7b" and not MODELS["7b"].is_file():
+      n = _int_param(data.get("n_predict") or data.get("max_tokens"), 64, 1, MAX_N_PREDICT)
+      if model_key.lower() == "7b" and not MODELS["7b"].is_file():
         return self._json(503, {"ok": False, "error": "7b_weights_not_ready", "hint": "use model=3b or 1.1b"})
       out = whisper(prompt, n_predict=n, model_key=model_key)
+      if out.get("error") == "busy":
+        return self._json(503, out)
       out["auth"] = "api_key" if (key_info and key_info.get("ok")) else ("local" if client_is_local(self) else "public_try")
       if key_info and key_info.get("ok"):
         out["key_id"] = key_info.get("id")
