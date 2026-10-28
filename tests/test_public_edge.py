@@ -16,7 +16,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
-from unittest import mock
+import unittest.mock as mock
 
 _TMP = tempfile.mkdtemp(prefix="chaska-test-")
 os.environ["CHASKA_DATA_DIR"] = _TMP

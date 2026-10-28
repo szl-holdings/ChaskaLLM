@@ -27,13 +27,24 @@ MODELS_DIR = Path("/opt/alloyscape/vendor/llama.cpp/models")
 MODELS = {
   "1.1b": MODELS_DIR / "chaskaclaw-cpu-1.1b.Q4_K_M.gguf",
   "tiny": MODELS_DIR / "chaskaclaw-cpu-1.1b.Q4_K_M.gguf",
+  # Legacy lane: Qwen2.5-3B-Instruct is under the Qwen Research License (non-commercial).
   "3b": MODELS_DIR / "chaskaclaw-cpu-3b.Q4_K_M.gguf",
-  "default": MODELS_DIR / "chaskaclaw-cpu-3b.Q4_K_M.gguf",
+  "4b": MODELS_DIR / "chaskallm-4b.Q4_K_M.gguf",
+  "default": MODELS_DIR / "chaskallm-4b.Q4_K_M.gguf",
   # Optional overflow — only advertised when the real GGUF exists (never Soft Shield default)
   "7b": MODELS_DIR / "chaskaclaw-cpu-7b.Q4_K_M.gguf",
 }
-DEFAULT_MODEL_KEY = os.environ.get("CHASKACLAW_MODEL", "3b")
-# Soft Shield pre-router must stay on 3b/1.1b — 7b is opt-in via model=7b only.
+# Base and license per lane, as published on the HF model card. A lane whose provenance
+# is not published reports None / "unknown" rather than a guess.
+_QWEN3_4B = {"base_model": "Qwen/Qwen3-4B-Instruct-2507", "license": "apache-2.0"}
+MODEL_INFO = {
+  "4b": _QWEN3_4B,
+  "default": _QWEN3_4B,
+  "3b": {"base_model": "Qwen/Qwen2.5-3B-Instruct", "license": "qwen-research (non-commercial)"},
+}
+UNKNOWN_MODEL_INFO = {"base_model": None, "license": "unknown"}
+DEFAULT_MODEL_KEY = os.environ.get("CHASKACLAW_MODEL", "4b")
+# Soft Shield pre-router stays on 4b (Apache-2.0); 7b is opt-in via model=7b only.
 ZTFI = Path("/opt/alloyscape/shared/bridge/ztfi")
 COVERAGE = ZTFI / "SEAT-COVERAGE.json"
 ROUTER = ZTFI / "ZTFI-TOKENLESS-ROUTER.md"
@@ -327,13 +338,13 @@ def available_models() -> dict[str, bool]:
 
 
 def resolve_model(key: str | None = None) -> tuple[str, Path]:
-  k = (key or DEFAULT_MODEL_KEY or "3b").strip().lower()
+  k = (key or DEFAULT_MODEL_KEY or "4b").strip().lower()
   if k not in MODELS:
-    k = "3b" if MODELS["3b"].is_file() else "1.1b"
+    k = "4b" if MODELS["4b"].is_file() else ("3b" if MODELS["3b"].is_file() else "1.1b")
   path = MODELS[k]
   if not path.is_file():
     # fall back — never silently pick 7b for default path
-    for alt in ("3b", "1.1b", "tiny", "default"):
+    for alt in ("4b", "3b", "1.1b", "tiny"):
       if MODELS[alt].is_file():
         return alt, MODELS[alt]
   return k, path
@@ -537,7 +548,7 @@ def whisper(prompt: str, n_predict: int = 64, model_key: str | None = None) -> d
     return {"ok": False, "error": "model_or_cli_missing", "model_key": key}
   if key == "7b":
     threads, ctx, timeout_s = 16, 4096, 300
-  elif key in ("3b", "default"):
+  elif key in ("3b", "4b", "default"):
     threads, ctx, timeout_s = 12, 2048, 240
   else:
     threads, ctx, timeout_s = 8, 512, 120
@@ -559,7 +570,7 @@ def whisper(prompt: str, n_predict: int = 64, model_key: str | None = None) -> d
     "Mention GPU only if asked. Only lead with YES/NO when the user asks a yes/no question."
   )
 
-  if key in ("3b", "default", "7b"):
+  if key in ("3b", "4b", "default", "7b"):
     cmd = [
       str(CLI), "-m", str(model),
       "-ngl", "0", "-t", str(threads), "-c", str(ctx), "-n", str(n_predict),
@@ -730,6 +741,8 @@ class Handler(BaseHTTPRequestHandler):
     if path == "/v1/info":
       key, model = resolve_model()
       avail = available_models()
+      info = MODEL_INFO.get(key, UNKNOWN_MODEL_INFO)
+      base = info["base_model"] or "an unpublished base model"
       return self._json(
         200,
         {
@@ -738,23 +751,23 @@ class Handler(BaseHTTPRequestHandler):
           "gpu": False,
           "n_gpu_layers": 0,
           "tokenless_lane": "Qiwicha+ZTFI",
-          "base_model": "Qwen/Qwen2.5-3B-Instruct",
+          "base_model": info["base_model"],
           "quantization": "Q4_K_M",
-          "license": "apache-2.0",
+          "license": info["license"],
           "default_model": key,
           "model_path": str(model),
           "models_available": avail,
-          "soft_shield_default": "3b",
+          "soft_shield_default": DEFAULT_MODEL_KEY,
           "naming_lock": {"cpu_llm": "ChaskaLLM", "openshell_twin": "ChaskaClaw", "note": "ChaskaClaw is NOT this CPU mouth"},
-          "honest_boundary": "House deployment + Q4_K_M packaging of Qwen2.5-Instruct. Not a from-scratch SZL base train. Not an OpenShell sandbox (that is ChaskaClaw/NemoClaw).",
-          "overflow_note": "Pass model=7b only when 7b file is present. Pre-router stays on 3b.",
+          "honest_boundary": f"House deployment + Q4_K_M packaging of {base}. Not a from-scratch SZL base train. Not an OpenShell sandbox (that is ChaskaClaw/NemoClaw).",
+          "overflow_note": f"Pass model=7b only when 7b file is present. Pre-router stays on {DEFAULT_MODEL_KEY}.",
           "chat_ui": "https://www.chaskaclaw.com/chat/",
           "docs_hf": "https://huggingface.co/SZLHOLDINGS/ChaskaLLM",
           "api_auth": "Optional for browser. Required for scripted clients: Authorization Bearer chaska_…",
           "image_gen": {"capability": "chaska.image.fast", "bridge": "flux.1-schnell", "video": False, "note": "Stills via year-1 NVIDIA bridge; video later"},
           "capabilities": ["chat", "upload", "api_keys", "image_gen_stills"],
           "scale_note": (
-            "HQ ~122GB RAM / 32c CPU. Live mouths: 1.1B (fast), 3B (default Soft Shield). "
+            f"HQ ~122GB RAM / 32c CPU. Live mouths: 1.1B (fast), {key} (default Soft Shield). "
             f"7B optional={'yes' if avail.get('7b') else 'downloading_or_absent'} — never Soft Shield default."
           ),
         },
