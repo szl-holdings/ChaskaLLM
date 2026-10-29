@@ -36,19 +36,29 @@ Proof: [a11oy.net](https://a11oy.net)
 
 ## Model details
 
-- Base: `Qwen/Qwen2.5-3B-Instruct`
-- Quant: Q4_K_M GGUF (3B Soft Shield default)
+- Default base: `Qwen/Qwen3-4B-Instruct-2507` (`4b` lane, `chaskallm-4b.Q4_K_M.gguf` on Hugging Face)
+- Retired base: `Qwen/Qwen2.5-3B-Instruct` (`3b` legacy lane; removed from Hugging Face main but still in its git history; chaskaclaw.com serves it until the 4B deploy)
+- Quant: Q4_K_M GGUF (4B Soft Shield default)
 - Runtime: llama.cpp `-ngl 0` (CPU)
 - Naming lock: **ChaskaLLM** = mouth · **ChaskaClaw** = house OpenShell twin
 
 ## License
 
+Code and weights are licensed separately, as `NOTICE` explains:
+
 - **This repository’s code:** Apache-2.0 (`LICENSE`)
-- **Upstream weights:** see `NOTICE` — Qwen research / upstream notices apply to redistributed weights; packaging Apache-2.0 does not re-license them
+- **Upstream weights:** redistributed weights carry their upstream license; packaging Apache-2.0 does not re-license them
+  - `chaskallm-4b.Q4_K_M.gguf`: upstream `Qwen/Qwen3-4B-Instruct-2507` and `unsloth/Qwen3-4B-Instruct-2507-GGUF` both declare `license: apache-2.0` on the Hub
+  - `chaskallm-3b.Q4_K_M.gguf` (retired): upstream `Qwen/Qwen2.5-3B-Instruct` declares `license: other` / `license_name: qwen-research` on the Hub; Qwen research / upstream notices apply to it
+
+This section reports upstream Hub metadata. It is not a legal determination.
 
 ## Smoke honesty
 
-See `smoke/SMOKE-SCOPE.md`. Public PASS claims are scoped to the **3B** lane; preserve any failed internal 1.1B checks in the full receipt.
+See `smoke/SMOKE-SCOPE.md`.
+
+- **4B lane:** `smoke/SMOKE-4B-LATEST.json` (mirrored from Hugging Face), 7 / 7 checks passed on 2026-10-28.
+- **Retired 3B build:** `smoke/SMOKE-HQ-LATEST.json` ends with `"pass": false`, because its internal 1.1B lane (`chat_fast_1b`) failed. Its public PASS badge covered the 3B lane only (`publication_badge: PASS_3B_ONLY`, `full_receipt_pass: false` in `smoke/SCOPE.json`). The failed case is preserved.
 
 ## Meeting priority note (2026-10-26)
 

@@ -1,0 +1,70 @@
+{
+ "artifact": "chaskallm-4b.Q4_K_M.gguf",
+ "sha256": "3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597",
+ "source": "unsloth/Qwen3-4B-Instruct-2507-GGUF@a06e946bb6b655725eafa393f4a9745d460374c9 Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+ "base": "Qwen/Qwen3-4B-Instruct-2507@cdbee75f17c01a7cc42f958dc650907174af0554 (apache-2.0)",
+ "runtime": "llama.cpp build 10777 (e3de71522), CPU only: CUDA_VISIBLE_DEVICES empty, -ngl 0, -t 4, c 2048",
+ "host": "szl-massed-vm1 (6 vCPU)",
+ "measured_at": "2026-10-28T07:23:48Z",
+ "passed": 7,
+ "total": 7,
+ "checks": [
+  {
+   "check": "exact_reply",
+   "prompt": "Reply exactly: CHASKA_SMOKE_OK",
+   "reply": "CHASKA_SMOKE_OK",
+   "pass": true,
+   "seconds": 5.8,
+   "gen_tok_per_s": 5.1
+  },
+  {
+   "check": "gpu_honesty",
+   "prompt": "Does ChaskaLLM run on GPU?",
+   "reply": "NO It runs on CPU only, no GPU usage.",
+   "pass": true,
+   "seconds": 2.67,
+   "gen_tok_per_s": 6.0
+  },
+  {
+   "check": "identity",
+   "prompt": "What is your product name? Answer with the name only.",
+   "reply": "ChaskaLLM",
+   "pass": true,
+   "seconds": 1.45,
+   "gen_tok_per_s": 6.4
+  },
+  {
+   "check": "route_greet",
+   "prompt": "Classify the message into exactly one label: GREET, STATUS, or ESCALATE. Reply with the label only.\nMessage: hey, good morning!",
+   "reply": "GREET",
+   "pass": true,
+   "seconds": 2.1,
+   "gen_tok_per_s": 4.5
+  },
+  {
+   "check": "route_status",
+   "prompt": "Classify the message into exactly one label: GREET, STATUS, or ESCALATE. Reply with the label only.\nMessage: is the nightly backup done yet?",
+   "reply": "STATUS",
+   "pass": true,
+   "seconds": 0.9,
+   "gen_tok_per_s": 6.4
+  },
+  {
+   "check": "route_escalate",
+   "prompt": "Classify the message into exactly one label: GREET, STATUS, or ESCALATE. Reply with the label only.\nMessage: refactor our payment service and write the database migration tests.",
+   "reply": "ESCALATE",
+   "pass": true,
+   "seconds": 1.22,
+   "gen_tok_per_s": 6.2
+  },
+  {
+   "check": "raw_chatml_drop_in",
+   "prompt": "HQ-style raw ChatML prompt",
+   "reply": "NO. ChaskaLLM does not use a GPU. It runs on CPU only.",
+   "pass": true,
+   "seconds": 4.05,
+   "gen_tok_per_s": 5.7,
+   "prompt_tok_per_s": 15.7
+  }
+ ]
+}
