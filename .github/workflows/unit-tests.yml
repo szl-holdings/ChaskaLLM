@@ -1,0 +1,30 @@
+name: Unit tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+      # Standard-library tests: temporary files and loopback HTTP only.
+      # Model execution and the NVIDIA image bridge are mocked; no weights,
+      # provider credentials, package installation, or deployment is needed.
+      - name: Run model-info and public-edge regression tests
+        env:
+          CHASKA_DATA_DIR: ${{ runner.temp }}/chaska-unit-data
+          CHASKACLAW_MODEL: '4b'
+        run: python -m unittest discover -s tests -p 'test_*.py' -v
