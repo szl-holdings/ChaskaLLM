@@ -316,7 +316,7 @@ GEN_SLOTS = threading.BoundedSemaphore(max(1, MAX_CONCURRENT_GEN))
 def _int_param(value, default: int, lo: int, hi: int) -> int:
   try:
     n = int(value)
-  except (TypeError, ValueError):
+  except (TypeError, ValueError, OverflowError):
     return default
   return max(lo, min(n, hi))
 
@@ -842,6 +842,9 @@ class Handler(BaseHTTPRequestHandler):
       for message in data.get("messages", []):
         if any(not isinstance(message.get(field), str) for field in ("role", "content")):
           return self._json(400, {"ok": False, "error": "invalid_field_type", "field": "messages"})
+      for attachment in data.get("attachments", []):
+        if attachment.get("excerpt") is not None and not isinstance(attachment["excerpt"], str):
+          return self._json(400, {"ok": False, "error": "invalid_field_type", "field": "attachments"})
       for field in ("image", "generate_image"):
         if field in data and not isinstance(data[field], bool):
           return self._json(400, {"ok": False, "error": "invalid_field_type", "field": field})

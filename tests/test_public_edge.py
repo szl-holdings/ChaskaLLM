@@ -185,6 +185,8 @@ class PublicEdgeTest(unittest.TestCase):
       ("/v1/chat", {"messages": ["hello"]}),
       ("/v1/chat", {"messages": [{"role": "user", "content": ["hello"]}]}),
       ("/v1/chat", {"prompt": "hello", "attachments": {}}),
+      ("/v1/chat", {"prompt": "hello", "attachments": [{"excerpt": {"text": "hello"}}]}),
+      ("/v1/chat", {"prompt": "hello", "attachments": [{"excerpt": 1}]}),
       ("/v1/chat", {"prompt": "hello", "image": "false"}),
       ("/v1/images", {"prompt": 1}),
       ("/v1/images", {"text": ["cat"]}),
@@ -223,10 +225,34 @@ class PublicEdgeTest(unittest.TestCase):
     self.assertEqual(status, 200, out)
     self.assertTrue(out["key"].startswith("chaska_"))
 
+  def test_attachment_excerpt_defaults_and_text_remain_accepted(self) -> None:
+    for attachment in ({"filename": "a.bin"}, {"excerpt": None}, {"excerpt": "hello"}):
+      with self.subTest(attachment=attachment):
+        status, out = self.post("/v1/chat", {"prompt": "hello", "attachments": [attachment]})
+        self.assertEqual(status, 200, out)
+    self.assertEqual(len(self.gen_calls), 3)
+
   def test_n_predict_is_clamped(self) -> None:
     self.post("/v1/chat", {"prompt": "hello", "n_predict": 100000}, PUBLIC)
     self.post("/v1/chat", {"prompt": "hello", "max_tokens": "lots"}, PUBLIC)
     self.assertEqual([c["n_predict"] for c in self.gen_calls], [api.MAX_N_PREDICT, 64])
+
+  def test_overflowing_numeric_json_uses_bounded_defaults(self) -> None:
+    for value in (b"1e999", b"-1e999"):
+      with self.subTest(value=value):
+        status, out = self.post("/v1/chat", raw=b'{"prompt":"hello","n_predict":' + value + b'}')
+        self.assertEqual(status, 200, out)
+        self.assertEqual(self.gen_calls[-1]["n_predict"], 64)
+    sent = {}
+
+    def capture(req, timeout=None):
+      sent.update(json.loads(req.data))
+      return _FakeNvidiaResponse()
+
+    with mock.patch("urllib.request.urlopen", side_effect=capture):
+      status, out = self.post("/v1/images", raw=b'{"prompt":"a cat","width":1e999,"height":-1e999}')
+    self.assertEqual(status, 200, out)
+    self.assertEqual((sent["width"], sent["height"]), (1024, 1024))
 
   def test_public_chat_is_rate_limited_but_loopback_is_not(self) -> None:
     with mock.patch.object(api, "CHAT_PER_IP_MINUTE", 2):
