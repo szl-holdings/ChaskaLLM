@@ -200,6 +200,21 @@ class PublicEdgeTest(unittest.TestCase):
     self.assertEqual(self.gen_calls, [])
     self.assertEqual(self.nvidia_calls, 0)
 
+  def test_deeply_nested_json_returns_structured_error(self) -> None:
+    # CPython's C JSON decoder may have a different nesting limit from the
+    # Python call-stack limit. Keep this well beyond both, below the body cap.
+    depth = 10000
+    raw = b"[" * depth + b"0" + b"]" * depth
+    self.assertLess(len(raw), api.MAX_JSON_BYTES)
+    with mock.patch.object(api, "mint_api_key") as mint:
+      for path in ("/v1/chat", "/v1/images", "/v1/keys"):
+        with self.subTest(path=path):
+          status, out = self.post(path, raw=raw)
+          self.assertEqual((status, out["error"]), (400, "invalid_json"))
+      mint.assert_not_called()
+    self.assertEqual(self.gen_calls, [])
+    self.assertEqual(self.nvidia_calls, 0)
+
   def test_message_list_still_generates_and_empty_key_request_still_mints(self) -> None:
     status, out = self.post("/api/v1/chat", {"messages": [{"role": "user", "content": "hello"}]})
     self.assertEqual(status, 200, out)

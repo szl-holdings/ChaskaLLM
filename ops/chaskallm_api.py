@@ -821,7 +821,7 @@ class Handler(BaseHTTPRequestHandler):
       return self._json(200 if out.get("ok") else 400, out)
     try:
       data = json.loads(raw.decode("utf-8") or "{}") if raw else {}
-    except (ValueError, UnicodeError):
+    except (ValueError, UnicodeError, RecursionError):
       return self._json(400, {"ok": False, "error": "invalid_json"})
     if not isinstance(data, dict):
       return self._json(400, {"ok": False, "error": "json_object_required"})
