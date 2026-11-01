@@ -152,10 +152,107 @@ class PublicEdgeTest(unittest.TestCase):
     status, out = self.post("/v1/chat", {"prompt": "hello"}, {**PUBLIC, "Authorization": "Bearer chaska_wrong"})
     self.assertEqual((status, out["error"]), (401, "invalid_api_key"))
 
+  def test_non_object_json_is_rejected_without_side_effects(self) -> None:
+    with mock.patch.object(api, "mint_api_key") as mint, mock.patch.object(api, "tokenless_prove") as prove:
+      for path in ("/v1/chat", "/v1/images", "/v1/keys", "/v1/tokenless/prove"):
+        for value in ([], ["hello"], None, 1, True, "hello"):
+          with self.subTest(path=path, value=value):
+            status, out = self.post(path, raw=json.dumps(value).encode())
+            self.assertEqual((status, out["error"]), (400, "json_object_required"))
+      mint.assert_not_called()
+      prove.assert_not_called()
+    self.assertEqual(self.gen_calls, [])
+    self.assertEqual(self.nvidia_calls, 0)
+
+  def test_malformed_json_is_rejected_without_side_effects(self) -> None:
+    with mock.patch.object(api, "mint_api_key") as mint:
+      for raw in (b"{", b"not json", b"\xff", b"   "):
+        for path in ("/v1/chat", "/v1/images", "/v1/keys"):
+          with self.subTest(path=path, raw=raw):
+            status, out = self.post(path, raw=raw)
+            self.assertEqual((status, out["error"]), (400, "invalid_json"))
+      mint.assert_not_called()
+    self.assertEqual(self.gen_calls, [])
+    self.assertEqual(self.nvidia_calls, 0)
+
+  def test_prompt_and_route_field_types_are_rejected(self) -> None:
+    cases = [
+      ("/v1/chat", {"prompt": ["hello"]}),
+      ("/v1/chat", {"message": {"text": "hello"}}),
+      ("/v1/chat", {"prompt": "hello", "model": []}),
+      ("/v1/chat", {"prompt": "hello", "model_key": False}),
+      ("/v1/chat", {"messages": "hello"}),
+      ("/v1/chat", {"messages": ["hello"]}),
+      ("/v1/chat", {"messages": [{"role": "user", "content": ["hello"]}]}),
+      ("/v1/chat", {"prompt": "hello", "attachments": {}}),
+      ("/v1/chat", {"prompt": "hello", "attachments": [{"excerpt": {"text": "hello"}}]}),
+      ("/v1/chat", {"prompt": "hello", "attachments": [{"excerpt": 1}]}),
+      ("/v1/chat", {"prompt": "hello", "image": "false"}),
+      ("/v1/images", {"prompt": 1}),
+      ("/v1/images", {"text": ["cat"]}),
+      ("/v1/keys", {"label": []}),
+      ("/v1/keys", {"scope": {}}),
+    ]
+    with mock.patch.object(api, "mint_api_key") as mint:
+      for path, body in cases:
+        with self.subTest(path=path, body=body):
+          status, out = self.post(path, body)
+          self.assertEqual((status, out["error"]), (400, "invalid_field_type"))
+      mint.assert_not_called()
+    self.assertEqual(self.gen_calls, [])
+    self.assertEqual(self.nvidia_calls, 0)
+
+  def test_deeply_nested_json_returns_structured_error(self) -> None:
+    # CPython's C JSON decoder may have a different nesting limit from the
+    # Python call-stack limit. Keep this well beyond both, below the body cap.
+    depth = 10000
+    raw = b"[" * depth + b"0" + b"]" * depth
+    self.assertLess(len(raw), api.MAX_JSON_BYTES)
+    with mock.patch.object(api, "mint_api_key") as mint:
+      for path in ("/v1/chat", "/v1/images", "/v1/keys"):
+        with self.subTest(path=path):
+          status, out = self.post(path, raw=raw)
+          self.assertEqual((status, out["error"]), (400, "invalid_json"))
+      mint.assert_not_called()
+    self.assertEqual(self.gen_calls, [])
+    self.assertEqual(self.nvidia_calls, 0)
+
+  def test_message_list_still_generates_and_empty_key_request_still_mints(self) -> None:
+    status, out = self.post("/api/v1/chat", {"messages": [{"role": "user", "content": "hello"}]})
+    self.assertEqual(status, 200, out)
+    self.assertEqual(len(self.gen_calls), 1)
+    status, out = self.post("/v1/keys", raw=b"")
+    self.assertEqual(status, 200, out)
+    self.assertTrue(out["key"].startswith("chaska_"))
+
+  def test_attachment_excerpt_defaults_and_text_remain_accepted(self) -> None:
+    for attachment in ({"filename": "a.bin"}, {"excerpt": None}, {"excerpt": "hello"}):
+      with self.subTest(attachment=attachment):
+        status, out = self.post("/v1/chat", {"prompt": "hello", "attachments": [attachment]})
+        self.assertEqual(status, 200, out)
+    self.assertEqual(len(self.gen_calls), 3)
+
   def test_n_predict_is_clamped(self) -> None:
     self.post("/v1/chat", {"prompt": "hello", "n_predict": 100000}, PUBLIC)
     self.post("/v1/chat", {"prompt": "hello", "max_tokens": "lots"}, PUBLIC)
     self.assertEqual([c["n_predict"] for c in self.gen_calls], [api.MAX_N_PREDICT, 64])
+
+  def test_overflowing_numeric_json_uses_bounded_defaults(self) -> None:
+    for value in (b"1e999", b"-1e999"):
+      with self.subTest(value=value):
+        status, out = self.post("/v1/chat", raw=b'{"prompt":"hello","n_predict":' + value + b'}')
+        self.assertEqual(status, 200, out)
+        self.assertEqual(self.gen_calls[-1]["n_predict"], 64)
+    sent = {}
+
+    def capture(req, timeout=None):
+      sent.update(json.loads(req.data))
+      return _FakeNvidiaResponse()
+
+    with mock.patch("urllib.request.urlopen", side_effect=capture):
+      status, out = self.post("/v1/images", raw=b'{"prompt":"a cat","width":1e999,"height":-1e999}')
+    self.assertEqual(status, 200, out)
+    self.assertEqual((sent["width"], sent["height"]), (1024, 1024))
 
   def test_public_chat_is_rate_limited_but_loopback_is_not(self) -> None:
     with mock.patch.object(api, "CHAT_PER_IP_MINUTE", 2):

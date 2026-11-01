@@ -316,7 +316,7 @@ GEN_SLOTS = threading.BoundedSemaphore(max(1, MAX_CONCURRENT_GEN))
 def _int_param(value, default: int, lo: int, hi: int) -> int:
   try:
     n = int(value)
-  except (TypeError, ValueError):
+  except (TypeError, ValueError, OverflowError):
     return default
   return max(lo, min(n, hi))
 
@@ -821,8 +821,33 @@ class Handler(BaseHTTPRequestHandler):
       return self._json(200 if out.get("ok") else 400, out)
     try:
       data = json.loads(raw.decode("utf-8") or "{}") if raw else {}
-    except Exception:
-      data = {}
+    except (ValueError, UnicodeError, RecursionError):
+      return self._json(400, {"ok": False, "error": "invalid_json"})
+    if not isinstance(data, dict):
+      return self._json(400, {"ok": False, "error": "json_object_required"})
+    # Validate fields before key creation, rate accounting, or provider calls.
+    string_fields = {
+      "/v1/chat": ("prompt", "message", "model", "model_key"),
+      "/v1/images": ("prompt", "message", "text"),
+      "/v1/keys": ("label", "scope"),
+    }.get(path, ())
+    for field in string_fields:
+      if field in data and not isinstance(data[field], str):
+        return self._json(400, {"ok": False, "error": "invalid_field_type", "field": field})
+    if path == "/v1/chat":
+      for field in ("messages", "attachments"):
+        if field in data and (not isinstance(data[field], list) or
+                             any(not isinstance(item, dict) for item in data[field])):
+          return self._json(400, {"ok": False, "error": "invalid_field_type", "field": field})
+      for message in data.get("messages", []):
+        if any(not isinstance(message.get(field), str) for field in ("role", "content")):
+          return self._json(400, {"ok": False, "error": "invalid_field_type", "field": "messages"})
+      for attachment in data.get("attachments", []):
+        if attachment.get("excerpt") is not None and not isinstance(attachment["excerpt"], str):
+          return self._json(400, {"ok": False, "error": "invalid_field_type", "field": "attachments"})
+      for field in ("image", "generate_image"):
+        if field in data and not isinstance(data[field], bool):
+          return self._json(400, {"ok": False, "error": "invalid_field_type", "field": field})
     if path == "/v1/tokenless/prove":
       return self._json(200, tokenless_prove())
     if path == "/v1/keys":
