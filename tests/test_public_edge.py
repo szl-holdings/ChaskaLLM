@@ -152,6 +152,62 @@ class PublicEdgeTest(unittest.TestCase):
     status, out = self.post("/v1/chat", {"prompt": "hello"}, {**PUBLIC, "Authorization": "Bearer chaska_wrong"})
     self.assertEqual((status, out["error"]), (401, "invalid_api_key"))
 
+  def test_non_object_json_is_rejected_without_side_effects(self) -> None:
+    with mock.patch.object(api, "mint_api_key") as mint, mock.patch.object(api, "tokenless_prove") as prove:
+      for path in ("/v1/chat", "/v1/images", "/v1/keys", "/v1/tokenless/prove"):
+        for value in ([], ["hello"], None, 1, True, "hello"):
+          with self.subTest(path=path, value=value):
+            status, out = self.post(path, raw=json.dumps(value).encode())
+            self.assertEqual((status, out["error"]), (400, "json_object_required"))
+      mint.assert_not_called()
+      prove.assert_not_called()
+    self.assertEqual(self.gen_calls, [])
+    self.assertEqual(self.nvidia_calls, 0)
+
+  def test_malformed_json_is_rejected_without_side_effects(self) -> None:
+    with mock.patch.object(api, "mint_api_key") as mint:
+      for raw in (b"{", b"not json", b"\xff", b"   "):
+        for path in ("/v1/chat", "/v1/images", "/v1/keys"):
+          with self.subTest(path=path, raw=raw):
+            status, out = self.post(path, raw=raw)
+            self.assertEqual((status, out["error"]), (400, "invalid_json"))
+      mint.assert_not_called()
+    self.assertEqual(self.gen_calls, [])
+    self.assertEqual(self.nvidia_calls, 0)
+
+  def test_prompt_and_route_field_types_are_rejected(self) -> None:
+    cases = [
+      ("/v1/chat", {"prompt": ["hello"]}),
+      ("/v1/chat", {"message": {"text": "hello"}}),
+      ("/v1/chat", {"prompt": "hello", "model": []}),
+      ("/v1/chat", {"prompt": "hello", "model_key": False}),
+      ("/v1/chat", {"messages": "hello"}),
+      ("/v1/chat", {"messages": ["hello"]}),
+      ("/v1/chat", {"messages": [{"role": "user", "content": ["hello"]}]}),
+      ("/v1/chat", {"prompt": "hello", "attachments": {}}),
+      ("/v1/chat", {"prompt": "hello", "image": "false"}),
+      ("/v1/images", {"prompt": 1}),
+      ("/v1/images", {"text": ["cat"]}),
+      ("/v1/keys", {"label": []}),
+      ("/v1/keys", {"scope": {}}),
+    ]
+    with mock.patch.object(api, "mint_api_key") as mint:
+      for path, body in cases:
+        with self.subTest(path=path, body=body):
+          status, out = self.post(path, body)
+          self.assertEqual((status, out["error"]), (400, "invalid_field_type"))
+      mint.assert_not_called()
+    self.assertEqual(self.gen_calls, [])
+    self.assertEqual(self.nvidia_calls, 0)
+
+  def test_message_list_still_generates_and_empty_key_request_still_mints(self) -> None:
+    status, out = self.post("/api/v1/chat", {"messages": [{"role": "user", "content": "hello"}]})
+    self.assertEqual(status, 200, out)
+    self.assertEqual(len(self.gen_calls), 1)
+    status, out = self.post("/v1/keys", raw=b"")
+    self.assertEqual(status, 200, out)
+    self.assertTrue(out["key"].startswith("chaska_"))
+
   def test_n_predict_is_clamped(self) -> None:
     self.post("/v1/chat", {"prompt": "hello", "n_predict": 100000}, PUBLIC)
     self.post("/v1/chat", {"prompt": "hello", "max_tokens": "lots"}, PUBLIC)
