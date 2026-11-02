@@ -874,9 +874,10 @@ class Handler(BaseHTTPRequestHandler):
       if not local and not RATE.allow("chat", who, CHAT_PER_IP_MINUTE, 60):
         return self._json(429, {"ok": False, "error": "rate_limited", "limit": "chat requests per minute"})
       keyed = bool(key_info and key_info.get("ok"))
-      model_key = str(data.get("model") or data.get("model_key") or DEFAULT_MODEL_KEY)
+      # Authorize the same normalized lane that resolve_model will select.
+      model_key = str(data.get("model") or data.get("model_key") or DEFAULT_MODEL_KEY).strip().lower() or "4b"
       # 7b costs 16 threads for up to 300 s per call: keyed callers only, never anonymous.
-      if model_key.lower() == "7b" and not keyed:
+      if model_key == "7b" and not keyed:
         return self._json(403, {"ok": False, "error": "api_key_required_for_7b", "hint": "use model=3b or send Authorization: Bearer chaska_…"})
       prompt = (data.get("prompt") or data.get("message") or "").strip()
       if not prompt and isinstance(data.get("messages"), list):
@@ -949,7 +950,7 @@ class Handler(BaseHTTPRequestHandler):
           "auth": "api_key" if (key_info and key_info.get("ok")) else ("local" if client_is_local(self) else "public_try"),
         })
       n = _int_param(data.get("n_predict") or data.get("max_tokens"), 64, 1, MAX_N_PREDICT)
-      if model_key.lower() == "7b" and not MODELS["7b"].is_file():
+      if model_key == "7b" and not MODELS["7b"].is_file():
         return self._json(503, {"ok": False, "error": "7b_weights_not_ready", "hint": "use model=3b or 1.1b"})
       out = whisper(prompt, n_predict=n, model_key=model_key)
       if out.get("error") == "busy":
