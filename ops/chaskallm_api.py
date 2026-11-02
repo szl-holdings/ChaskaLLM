@@ -669,30 +669,44 @@ def whisper(prompt: str, n_predict: int = 64, model_key: str | None = None) -> d
     "Mention GPU only if asked. Only lead with YES/NO when the user asks a yes/no question."
   )
 
+  prompt_text = prompt
   if key in ("3b", "4b", "default", "7b"):
     cmd = [
       str(CLI), "-m", str(model),
       "-ngl", "0", "-t", str(threads), "-c", str(ctx), "-n", str(n_predict),
       "--temp", "0.7",
       "-sys", system,
-      "-p", prompt,
       "-st", "--simple-io", "--jinja", "--no-display-prompt", "--perf", "--log-disable",
     ]
   else:
-    prompt_fmt = f"User: {prompt}\nAssistant:"
+    prompt_text = f"User: {prompt}\nAssistant:"
     cmd = [
       str(CLI), "-m", str(model),
       "-ngl", "0", "-t", str(threads), "-c", str(ctx), "-n", str(n_predict),
-      "--temp", "0.7", "-p", prompt_fmt,
+      "--temp", "0.7",
       "-st", "--simple-io", "--no-display-prompt", "--no-jinja", "--perf", "--log-disable",
     ]
+
+  try:
+    prompt_bytes = prompt_text.encode("utf-8")
+  except UnicodeError:
+    return {"ok": False, "error": "invalid_prompt_encoding", "model_key": key}
 
   if not GEN_SLOTS.acquire(timeout=GEN_WAIT_S):
     return {"ok": False, "error": "busy", "model_key": key, "product": "ChaskaLLM", "gpu": False}
   try:
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s)
+    # Keep caller text out of the command line (and process listings). The
+    # binary-file option preserves final newlines; --file removes one newline.
+    # The private directory and file are removed after process exit or timeout.
+    with tempfile.TemporaryDirectory(prefix="chaska-prompt-") as prompt_dir:
+      with tempfile.NamedTemporaryFile(mode="wb", dir=prompt_dir, delete=False) as prompt_file:
+        prompt_file.write(prompt_bytes)
+      cmd.extend(["--binary-file", prompt_file.name])
+      proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s, shell=False)
   except subprocess.TimeoutExpired:
     return {"ok": False, "error": "timeout", "model_key": key, "product": "ChaskaLLM", "gpu": False}
+  except OSError:
+    return {"ok": False, "error": "generation_io_error", "model_key": key, "product": "ChaskaLLM", "gpu": False}
   finally:
     GEN_SLOTS.release()
   out = proc.stdout or ""

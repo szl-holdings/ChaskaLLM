@@ -236,11 +236,15 @@ class MetadataConcurrencyTest(unittest.TestCase):
     with mock.patch.object(self.api, "CLI", cli), \
         mock.patch.dict(self.api.MODELS, models, clear=True), \
         mock.patch.object(self.api.subprocess, "run") as run:
-      run.return_value = mock.Mock(returncode=0, stdout="Assistant: response", stderr="")
+      observed_prompts = []
+      def capture(args, **kwargs):
+        observed_prompts.append(Path(args[args.index("--binary-file") + 1]).read_bytes())
+        return mock.Mock(returncode=0, stdout="Assistant: response", stderr="")
+      run.side_effect = capture
       for key in ("4b", "1.1b", "../../untrusted-model"):
         self.api.whisper("ordinary prompt", n_predict=19, model_key=key)
         baseline = list(run.call_args.args[0])
-        prompt_index = baseline.index("-p") + 1
+        prompt_index = baseline.index("--binary-file") + 1
         selected = "1.1b" if key == "1.1b" else "4b"
         for payload in payloads:
           with self.subTest(model=key, prompt=payload):
@@ -254,7 +258,9 @@ class MetadataConcurrencyTest(unittest.TestCase):
             self.assertEqual(argv[0], str(cli))
             self.assertEqual(argv[argv.index("-m") + 1], str(models[selected]))
             expected_prompt = f"User: {payload}\nAssistant:" if selected == "1.1b" else payload
-            self.assertEqual(argv[prompt_index], expected_prompt)
+            self.assertEqual(observed_prompts[-1], expected_prompt.encode("utf-8"))
+            self.assertNotIn(payload, argv)
+            self.assertFalse(Path(argv[prompt_index]).exists())
             self.assertEqual(argv[:prompt_index] + argv[prompt_index + 1:],
                              baseline[:prompt_index] + baseline[prompt_index + 1:])
 
