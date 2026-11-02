@@ -10,7 +10,7 @@ from pathlib import Path
 import tempfile
 import threading
 import unittest
-from unittest import mock
+import unittest.mock as mock
 
 
 class MetadataConcurrencyTest(unittest.TestCase):
@@ -184,13 +184,13 @@ class MetadataConcurrencyTest(unittest.TestCase):
       for raw in common + malformed:
         with self.subTest(store=path.name, case=raw[:24]):
           path.write_bytes(raw)
-          payloads = set(self.uploads.glob("*__*"))
+          payloads = set(self.uploads.iterdir())
           with self.assertRaises(self.api.MetadataStoreError):
             loader()
           with self.assertRaises(self.api.MetadataStoreError):
             mutate()
           self.assertEqual(path.read_bytes(), raw)
-          self.assertEqual(set(self.uploads.glob("*__*")), payloads)
+          self.assertEqual(set(self.uploads.iterdir()), payloads)
 
   def test_corrupt_key_store_blocks_verification_without_replacing_evidence(self):
     raw = b'{"version":1,"keys":[{"active":true}]}'
@@ -198,6 +198,65 @@ class MetadataConcurrencyTest(unittest.TestCase):
     with self.assertRaises(self.api.MetadataStoreError):
       self.api.verify_api_key("chaska_synthetic_test_value")
     self.assertEqual(self.api.KEYS_PATH.read_bytes(), raw)
+
+  def test_upload_storage_path_uses_only_generated_identity(self):
+    for name in ("../../caller.txt", "..\\..\\caller.txt", "caller supplied name.txt"):
+      with self.subTest(filename=name):
+        upload = self.api.save_upload(name, b"payload", "text/plain")
+        record = self.api.get_upload(upload["id"])
+        self.assertEqual(Path(record["path"]), self.uploads / upload["id"])
+        self.assertEqual(record["filename"], upload["filename"])
+
+  def test_legacy_upload_paths_remain_retrievable(self):
+    upload = self.api.save_upload("original.txt", b"original", "text/plain")
+    database = self.api._load_uploads()
+    record = database["files"][upload["id"]]
+    legacy = self.uploads / f"{upload['id']}__original.txt"
+    Path(record["path"]).rename(legacy)
+    record["path"] = str(legacy)
+    self.api._save_uploads(database)
+    retrieved = self.api.get_upload(upload["id"])
+    self.assertEqual(Path(retrieved["path"]).read_bytes(), b"original")
+
+  def test_prompt_cannot_change_executable_options_or_argument_count(self):
+    # Qualify the Python argv boundary; this does not execute or certify a
+    # deployed llama-cli binary, its parser, or its model behavior.
+    cli = self.root / "llama-cli"
+    cli.write_bytes(b"not executed")
+    models = {name: self.root / f"{name}.gguf" for name in ("4b", "3b", "1.1b", "tiny", "7b")}
+    for path in models.values():
+      path.write_bytes(b"not loaded")
+    models["default"] = models["4b"]
+    payloads = [
+      "--model /untrusted/model --n-predict -1",
+      "'; echo unexpected; # $(echo unexpected) `echo unexpected`",
+      "first line\n--file /untrusted/input\nlast line",
+      r'..\untrusted.exe & echo unexpected | command',
+    ]
+    with mock.patch.object(self.api, "CLI", cli), \
+        mock.patch.dict(self.api.MODELS, models, clear=True), \
+        mock.patch.object(self.api.subprocess, "run") as run:
+      run.return_value = mock.Mock(returncode=0, stdout="Assistant: response", stderr="")
+      for key in ("4b", "1.1b", "../../untrusted-model"):
+        self.api.whisper("ordinary prompt", n_predict=19, model_key=key)
+        baseline = list(run.call_args.args[0])
+        prompt_index = baseline.index("-p") + 1
+        selected = "1.1b" if key == "1.1b" else "4b"
+        for payload in payloads:
+          with self.subTest(model=key, prompt=payload):
+            run.reset_mock()
+            self.api.whisper(payload, n_predict=19, model_key=key)
+            run.assert_called_once()
+            argv = run.call_args.args[0]
+            self.assertIsInstance(argv, list)
+            self.assertFalse(run.call_args.kwargs.get("shell", False))
+            self.assertNotIn("executable", run.call_args.kwargs)
+            self.assertEqual(argv[0], str(cli))
+            self.assertEqual(argv[argv.index("-m") + 1], str(models[selected]))
+            expected_prompt = f"User: {payload}\nAssistant:" if selected == "1.1b" else payload
+            self.assertEqual(argv[prompt_index], expected_prompt)
+            self.assertEqual(argv[:prompt_index] + argv[prompt_index + 1:],
+                             baseline[:prompt_index] + baseline[prompt_index + 1:])
 
   def test_invalid_record_identity_or_types_do_not_accept_successful_mutations(self):
     upload = self.api.save_upload("existing.txt", b"existing", "text/plain")

@@ -191,7 +191,8 @@ def save_upload(filename: str, raw: bytes, media_type: str | None = None) -> dic
     return {"ok": False, "error": "file_too_large", "max_bytes": MAX_UPLOAD_BYTES}
   safe = re.sub(r"[^a-zA-Z0-9._-]+", "_", (filename or "file").strip())[:120] or "file"
   fid = secrets.token_hex(12)
-  dest = UPLOAD_DIR / f"{fid}__{safe}"
+  # Keep the caller's filename as display metadata, never as a storage path.
+  dest = UPLOAD_DIR / fid
   kind = "image" if (media_type or "").startswith("image/") or safe.lower().endswith((".png",".jpg",".jpeg",".gif",".webp",".bmp",".svg")) else "file"
   excerpt = None
   ext = Path(safe).suffix.lower()
@@ -896,7 +897,7 @@ class Handler(BaseHTTPRequestHandler):
       self.send_header("Cache-Control", "private, max-age=3600")
       self.end_headers()
       self.wfile.write(data)
-      return
+      return None
     return self._json(404, {"ok": False, "error": "not_found", "path": path})
 
   def do_POST(self):
