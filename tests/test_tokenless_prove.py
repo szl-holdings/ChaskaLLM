@@ -10,8 +10,8 @@ import os
 import sys
 import tempfile
 import unittest
+import unittest.mock as mock
 from pathlib import Path
-from unittest import mock
 
 os.environ.setdefault("CHASKA_DATA_DIR", tempfile.mkdtemp(prefix="chaska-proof-import-"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "ops"))
