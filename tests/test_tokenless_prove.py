@@ -50,9 +50,10 @@ class TokenlessProveTest(unittest.TestCase):
 
     def isolated_path(path):
       # Never fall back to a real runtime path, even on the buggy baseline.
-      if path == str(LOOP_PROJECT):
+      candidate = Path(path)
+      if candidate == LOOP_PROJECT:
         return self.project
-      if path == str(PUBLIC_PROVE):
+      if candidate == PUBLIC_PROVE:
         return self.public
       raise AssertionError(f"unexpected runtime path: {path!r}")
 
