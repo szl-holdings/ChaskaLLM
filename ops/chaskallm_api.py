@@ -619,7 +619,7 @@ def whisper(prompt: str, n_predict: int = 64, model_key: str | None = None) -> d
 
 
 def tokenless_prove() -> dict:
-  """No LLM. Prove tribe ZTFI inject + loop from disk artifacts."""
+  """Report local marker/presence checks and scoreboard status; no LLM or crypto."""
   cov = json.loads(COVERAGE.read_text()) if COVERAGE.is_file() else {}
   loop = json.loads(LOOP_SB.read_text()) if LOOP_SB.is_file() else {}
   qich = {}
@@ -638,19 +638,16 @@ def tokenless_prove() -> dict:
     "think_seats_110": len(seats) >= 110,
     "living_wire_111": (living or 0) >= 111 or (wired_after or 0) >= 111,
     "whole_tribe": bool(cov.get("whole_tribe")),
-    "p3_sig": (sigs_cov.get("ztfi_p3") == SIGS["ztfi_p3"]) or True,
+    "p3_sig": sigs_cov.get("ztfi_p3") == SIGS["ztfi_p3"],
     "p4_sig": sigs_cov.get("ztfi_p4") == SIGS["ztfi_p4"],
     "anchor_sig": sigs_cov.get("anchor") == SIGS["anchor"],
     "qde_sig": sigs_cov.get("qde") == SIGS["qde"],
     "loop_scoreboard": LOOP_SB.is_file(),
+    # Keep the legacy explicit aggregate status; neither form reruns the loop.
     "loop_24_24": (loop.get("passed") == 24 and loop.get("loops") == 24) or (loop.get("ok") is True),
     "qiwicha_manifest": QICH.is_file(),
     "router_doc": ROUTER.is_file(),
   }
-  if not checks["loop_24_24"] and (
-    Path("/opt/alloyscape/builder-sandboxes/hermesnous/projects/wo-recursive-spacetime-loop-20261024T235435Z") / "RESULT.md"
-  ).is_file():
-    checks["loop_24_24"] = True
   body = {
     "ok": all(checks.values()) if checks else False,
     "mode": "tokenless_no_llm",
