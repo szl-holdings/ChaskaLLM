@@ -152,6 +152,35 @@ class PublicEdgeTest(unittest.TestCase):
     status, out = self.post("/v1/chat", {"prompt": "hello"}, {**PUBLIC, "Authorization": "Bearer chaska_wrong"})
     self.assertEqual((status, out["error"]), (401, "invalid_api_key"))
 
+  def test_7b_whitespace_cannot_bypass_the_anonymous_gate(self) -> None:
+    seven = Path(_TMP) / "7b-whitespace.gguf"
+    seven.write_bytes(b"x")
+    with mock.patch.dict(api.MODELS, {"7b": seven}):
+      for field in ("model", "model_key"):
+        for value in (" 7b", "7b ", "\t7B\n"):
+          with self.subTest(field=field, value=value):
+            status, out = self.post("/api/v1/chat", {"prompt": "hello", field: value}, PUBLIC)
+            self.assertEqual((status, out.get("error")), (403, "api_key_required_for_7b"))
+    self.assertEqual(self.gen_calls, [])
+
+  def test_keyed_7b_whitespace_uses_the_same_normalized_lane(self) -> None:
+    seven = Path(_TMP) / "7b-keyed-whitespace.gguf"
+    seven.write_bytes(b"x")
+    _, minted = self.post("/v1/keys", {"label": "normalized lane"})
+    headers = {**PUBLIC, "Authorization": f"Bearer {minted['key']}"}
+    with mock.patch.dict(api.MODELS, {"7b": seven}):
+      status, out = self.post("/v1/chat", {"prompt": "hello", "model": "\t7B "}, headers)
+    self.assertEqual(status, 200, out)
+    self.assertEqual(self.gen_calls[-1]["model_key"], "7b")
+
+  def test_keyed_7b_whitespace_still_checks_weight_readiness(self) -> None:
+    _, minted = self.post("/v1/keys", {"label": "missing lane"})
+    headers = {**PUBLIC, "Authorization": f"Bearer {minted['key']}"}
+    with mock.patch.dict(api.MODELS, {"7b": Path(_TMP) / "missing-7b.gguf"}):
+      status, out = self.post("/v1/chat", {"prompt": "hello", "model": " 7b "}, headers)
+    self.assertEqual((status, out.get("error")), (503, "7b_weights_not_ready"))
+    self.assertEqual(self.gen_calls, [])
+
   def test_non_object_json_is_rejected_without_side_effects(self) -> None:
     with mock.patch.object(api, "mint_api_key") as mint, mock.patch.object(api, "tokenless_prove") as prove:
       for path in ("/v1/chat", "/v1/images", "/v1/keys", "/v1/tokenless/prove"):
