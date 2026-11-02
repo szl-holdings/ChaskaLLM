@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools==78.1.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "chaskallm-ops"
+version = "0.1.0"
+description = "Offline operational contracts for ChaskaLLM; no weights or training runtime included."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+dependencies = []
+
+[project.scripts]
+chaska-corpus-admit = "chaskallm_ops.corpus_admission:main"
+
+[tool.setuptools]
+packages = ["chaskallm_ops"]

@@ -10,3 +10,6 @@ venv/
 /data/
 /uploads/
 /images/
+/build/
+/dist/
+/*.egg-info/
