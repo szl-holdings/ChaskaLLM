@@ -1,0 +1,2 @@
+# Intentionally empty: ChaskaLLM operational code and tests are stdlib-only.
+# The sole build backend is pinned exactly in pyproject.toml.
