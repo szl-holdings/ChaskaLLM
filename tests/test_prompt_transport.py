@@ -11,7 +11,7 @@ import sys
 import tempfile
 import threading
 import unittest
-from unittest import mock
+import unittest.mock as mock
 
 
 class PromptTransportTest(unittest.TestCase):
