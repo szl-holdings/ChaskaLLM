@@ -638,19 +638,19 @@ def tokenless_prove() -> dict:
     "think_seats_110": len(seats) >= 110,
     "living_wire_111": (living or 0) >= 111 or (wired_after or 0) >= 111,
     "whole_tribe": bool(cov.get("whole_tribe")),
-    "p3_sig": (sigs_cov.get("ztfi_p3") == SIGS["ztfi_p3"]) or True,
+    "p3_sig": sigs_cov.get("ztfi_p3") == SIGS["ztfi_p3"],
     "p4_sig": sigs_cov.get("ztfi_p4") == SIGS["ztfi_p4"],
     "anchor_sig": sigs_cov.get("anchor") == SIGS["anchor"],
     "qde_sig": sigs_cov.get("qde") == SIGS["qde"],
     "loop_scoreboard": LOOP_SB.is_file(),
-    "loop_24_24": (loop.get("passed") == 24 and loop.get("loops") == 24) or (loop.get("ok") is True),
+    # The named 24/24 check requires actual counts. An aggregate flag or a
+    # narrative RESULT.md cannot replace the scoreboard's evidence.
+    "loop_24_24": (type(loop.get("passed")) is int and loop["passed"] == 24
+                   and type(loop.get("loops")) is int and loop["loops"] == 24
+                   and loop.get("ok", True) is True),
     "qiwicha_manifest": QICH.is_file(),
     "router_doc": ROUTER.is_file(),
   }
-  if not checks["loop_24_24"] and (
-    Path("/opt/alloyscape/builder-sandboxes/hermesnous/projects/wo-recursive-spacetime-loop-20261024T235435Z") / "RESULT.md"
-  ).is_file():
-    checks["loop_24_24"] = True
   body = {
     "ok": all(checks.values()) if checks else False,
     "mode": "tokenless_no_llm",
