@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import secrets
 import subprocess
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -86,20 +88,102 @@ NVIDIA_BUILD_PACK = Path("/opt/alloyscape/secrets/nvidia-build-rosa-video-audio-
 FLUX_INVOKE_URL = "https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux.1-schnell"
 TEXT_EXTS = {".txt",".md",".csv",".json",".jsonl",".py",".js",".mjs",".ts",".tsx",".html",".css",".xml",".yaml",".yml",".toml",".ini",".log",".sh",".rs",".go",".java",".c",".cpp",".h",".rb",".php",".sql"}
 
+# One process serves requests with ThreadingHTTPServer. Protect each complete
+# read/modify/write transaction; atomic replacement alone cannot prevent a
+# second request from overwriting a snapshot read before the first write.
+_UPLOADS_LOCK = threading.Lock()
+_KEYS_LOCK = threading.Lock()
+
+
+class MetadataStoreError(RuntimeError):
+  """Persisted metadata cannot be read safely; never replace it with defaults."""
+
+
+def _unique_metadata_object(pairs):
+  value = {}
+  for key, item in pairs:
+    if key in value:
+      raise ValueError("duplicate metadata member")
+    value[key] = item
+  return value
+
+
+def _reject_metadata_constant(value):
+  raise ValueError("non-finite metadata number")
+
+
+def _metadata_float(value):
+  number = float(value)
+  if not math.isfinite(number):
+    raise ValueError("non-finite metadata number")
+  return number
+
+
+def _read_metadata(path: Path) -> dict | None:
+  try:
+    raw = path.read_text(encoding="utf-8")
+  except FileNotFoundError:
+    return None
+  except (OSError, UnicodeError) as exc:
+    raise MetadataStoreError(f"{path.name}: metadata is unreadable") from exc
+  try:
+    value = json.loads(raw, object_pairs_hook=_unique_metadata_object,
+                       parse_constant=_reject_metadata_constant, parse_float=_metadata_float)
+  except (ValueError, RecursionError) as exc:
+    raise MetadataStoreError(f"{path.name}: metadata JSON is invalid") from exc
+  if (not isinstance(value, dict) or type(value.get("version")) is not int
+      or value["version"] != 1):
+    raise MetadataStoreError(f"{path.name}: unsupported metadata format")
+  return value
+
+
+def _atomic_write_json(path: Path, value: dict) -> None:
+  """Publish a complete metadata snapshot using a unique, private temp file."""
+  path.parent.mkdir(parents=True, exist_ok=True)
+  payload = json.dumps(value, indent=2, allow_nan=False) + "\n"
+  temporary = None
+  try:
+    with tempfile.NamedTemporaryFile(
+      mode="w", encoding="utf-8", dir=path.parent,
+      prefix=f".{path.name}.", suffix=".tmp", delete=False,
+    ) as handle:
+      temporary = Path(handle.name)
+      handle.write(payload)
+      handle.flush()
+      os.fsync(handle.fileno())
+    os.replace(temporary, path)
+    # Persist the rename on platforms that support opening directories.
+    if hasattr(os, "O_DIRECTORY"):
+      directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+      try:
+        os.fsync(directory_fd)
+      finally:
+        os.close(directory_fd)
+  finally:
+    if temporary is not None:
+      temporary.unlink(missing_ok=True)
+
 
 def _load_uploads() -> dict:
-  if UPLOAD_META.is_file():
-    try:
-      return json.loads(UPLOAD_META.read_text())
-    except Exception:
-      pass
-  return {"version": 1, "files": {}}
+  value = _read_metadata(UPLOAD_META)
+  if value is None:
+    return {"version": 1, "files": {}}
+  files = value.get("files")
+  if not isinstance(files, dict):
+    raise MetadataStoreError("upload index: unsupported metadata format")
+  for fid, rec in files.items():
+    if (not fid or not isinstance(rec, dict) or rec.get("id") != fid
+        or any(not isinstance(rec.get(key), str)
+               for key in ("filename", "path", "mediaType", "created"))
+        or type(rec.get("bytes")) is not int or rec["bytes"] < 0
+        or rec.get("kind") not in ("file", "image")
+        or (rec.get("excerpt") is not None and not isinstance(rec["excerpt"], str))):
+      raise MetadataStoreError("upload index: unsupported record format")
+  return value
 
 
 def _save_uploads(db: dict) -> None:
-  tmp = UPLOAD_META.with_suffix(".tmp")
-  tmp.write_text(json.dumps(db, indent=2) + "\n")
-  tmp.replace(UPLOAD_META)
+  _atomic_write_json(UPLOAD_META, db)
 
 
 def save_upload(filename: str, raw: bytes, media_type: str | None = None) -> dict:
@@ -107,8 +191,8 @@ def save_upload(filename: str, raw: bytes, media_type: str | None = None) -> dic
     return {"ok": False, "error": "file_too_large", "max_bytes": MAX_UPLOAD_BYTES}
   safe = re.sub(r"[^a-zA-Z0-9._-]+", "_", (filename or "file").strip())[:120] or "file"
   fid = secrets.token_hex(12)
-  dest = UPLOAD_DIR / f"{fid}__{safe}"
-  dest.write_bytes(raw)
+  # Keep the caller's filename as display metadata, never as a storage path.
+  dest = UPLOAD_DIR / fid
   kind = "image" if (media_type or "").startswith("image/") or safe.lower().endswith((".png",".jpg",".jpeg",".gif",".webp",".bmp",".svg")) else "file"
   excerpt = None
   ext = Path(safe).suffix.lower()
@@ -127,9 +211,11 @@ def save_upload(filename: str, raw: bytes, media_type: str | None = None) -> dic
     "excerpt": excerpt,
     "created": _now(),
   }
-  db = _load_uploads()
-  db.setdefault("files", {})[fid] = rec
-  _save_uploads(db)
+  with _UPLOADS_LOCK:
+    db = _load_uploads()
+    dest.write_bytes(raw)
+    db.setdefault("files", {})[fid] = rec
+    _save_uploads(db)
   return {
     "ok": True,
     "id": fid,
@@ -189,25 +275,35 @@ def _now() -> str:
 
 
 def _load_keys() -> dict:
-  if KEYS_PATH.is_file():
-    try:
-      return json.loads(KEYS_PATH.read_text())
-    except Exception:
-      pass
-  return {"version": 1, "keys": []}
+  value = _read_metadata(KEYS_PATH)
+  if value is None:
+    return {"version": 1, "keys": []}
+  records = value.get("keys")
+  if not isinstance(records, list):
+    raise MetadataStoreError("key store: unsupported metadata format")
+  ids, digests = set(), set()
+  for rec in records:
+    if (not isinstance(rec, dict)
+        or any(not isinstance(rec.get(key), str)
+               for key in ("id", "label", "scope", "sha256", "prefix", "created"))
+        or not rec["id"] or not re.fullmatch(r"[0-9a-f]{64}", rec["sha256"])
+        or type(rec.get("active")) is not bool
+        or type(rec.get("calls")) is not int or rec["calls"] < 0
+        or (rec.get("last_used") is not None and not isinstance(rec["last_used"], str))
+        or rec["id"] in ids or rec["sha256"] in digests):
+      raise MetadataStoreError("key store: unsupported record format")
+    ids.add(rec["id"])
+    digests.add(rec["sha256"])
+  return value
 
 
 def _save_keys(db: dict) -> None:
-  KEYS_PATH.parent.mkdir(parents=True, exist_ok=True)
-  tmp = KEYS_PATH.with_suffix(".tmp")
-  tmp.write_text(json.dumps(db, indent=2) + "\n")
-  tmp.replace(KEYS_PATH)
+  _atomic_write_json(KEYS_PATH, db)
 
 
 def mint_api_key(label: str = "browser", scope: str = "chat") -> dict:
   raw = "chaska_" + secrets.token_urlsafe(24)
   digest = hashlib.sha256(raw.encode()).hexdigest()
-  db = _load_keys()
   rec = {
     "id": secrets.token_hex(8),
     "label": (label or "browser")[:80],
@@ -219,8 +315,10 @@ def mint_api_key(label: str = "browser", scope: str = "chat") -> dict:
     "calls": 0,
     "active": True,
   }
-  db.setdefault("keys", []).append(rec)
-  _save_keys(db)
+  with _KEYS_LOCK:
+    db = _load_keys()
+    db.setdefault("keys", []).append(rec)
+    _save_keys(db)
   return {"ok": True, "key": raw, "id": rec["id"], "prefix": rec["prefix"], "label": rec["label"], "created": rec["created"], "note": "Copy now — plaintext shown once."}
 
 
@@ -233,13 +331,14 @@ def verify_api_key(header_val: str | None) -> dict | None:
   if not token.startswith("chaska_"):
     return None
   digest = hashlib.sha256(token.encode()).hexdigest()
-  db = _load_keys()
-  for rec in db.get("keys", []):
-    if rec.get("active") and rec.get("sha256") == digest:
-      rec["last_used"] = _now()
-      rec["calls"] = int(rec.get("calls") or 0) + 1
-      _save_keys(db)
-      return {"ok": True, "id": rec["id"], "label": rec.get("label"), "prefix": rec.get("prefix")}
+  with _KEYS_LOCK:
+    db = _load_keys()
+    for rec in db.get("keys", []):
+      if rec.get("active") and rec.get("sha256") == digest:
+        rec["last_used"] = _now()
+        rec["calls"] = int(rec.get("calls") or 0) + 1
+        _save_keys(db)
+        return {"ok": True, "id": rec["id"], "label": rec.get("label"), "prefix": rec.get("prefix")}
   return {"ok": False, "error": "invalid_api_key"}
 
 
@@ -570,30 +669,44 @@ def whisper(prompt: str, n_predict: int = 64, model_key: str | None = None) -> d
     "Mention GPU only if asked. Only lead with YES/NO when the user asks a yes/no question."
   )
 
+  prompt_text = prompt
   if key in ("3b", "4b", "default", "7b"):
     cmd = [
       str(CLI), "-m", str(model),
       "-ngl", "0", "-t", str(threads), "-c", str(ctx), "-n", str(n_predict),
       "--temp", "0.7",
       "-sys", system,
-      "-p", prompt,
       "-st", "--simple-io", "--jinja", "--no-display-prompt", "--perf", "--log-disable",
     ]
   else:
-    prompt_fmt = f"User: {prompt}\nAssistant:"
+    prompt_text = f"User: {prompt}\nAssistant:"
     cmd = [
       str(CLI), "-m", str(model),
       "-ngl", "0", "-t", str(threads), "-c", str(ctx), "-n", str(n_predict),
-      "--temp", "0.7", "-p", prompt_fmt,
+      "--temp", "0.7",
       "-st", "--simple-io", "--no-display-prompt", "--no-jinja", "--perf", "--log-disable",
     ]
+
+  try:
+    prompt_bytes = prompt_text.encode("utf-8")
+  except UnicodeError:
+    return {"ok": False, "error": "invalid_prompt_encoding", "model_key": key}
 
   if not GEN_SLOTS.acquire(timeout=GEN_WAIT_S):
     return {"ok": False, "error": "busy", "model_key": key, "product": "ChaskaLLM", "gpu": False}
   try:
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s)
+    # Keep caller text out of the command line (and process listings). The
+    # binary-file option preserves final newlines; --file removes one newline.
+    # The private directory and file are removed after process exit or timeout.
+    with tempfile.TemporaryDirectory(prefix="chaska-prompt-") as prompt_dir:
+      with tempfile.NamedTemporaryFile(mode="wb", dir=prompt_dir, delete=False) as prompt_file:
+        prompt_file.write(prompt_bytes)
+      cmd.extend(["--binary-file", prompt_file.name])
+      proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s, shell=False)
   except subprocess.TimeoutExpired:
     return {"ok": False, "error": "timeout", "model_key": key, "product": "ChaskaLLM", "gpu": False}
+  except OSError:
+    return {"ok": False, "error": "generation_io_error", "model_key": key, "product": "ChaskaLLM", "gpu": False}
   finally:
     GEN_SLOTS.release()
   out = proc.stdout or ""
@@ -701,6 +814,12 @@ class Handler(BaseHTTPRequestHandler):
     self.end_headers()
 
   def do_GET(self):
+    try:
+      return self._do_GET()
+    except MetadataStoreError:
+      return self._json(503, {"ok": False, "error": "metadata_store_unavailable"})
+
+  def _do_GET(self):
     path = normalize_api_path(urllib.parse.urlparse(self.path).path)
     if path in ("/health", "/v1/health"):
       key, model = resolve_model()
@@ -789,10 +908,16 @@ class Handler(BaseHTTPRequestHandler):
       self.send_header("Cache-Control", "private, max-age=3600")
       self.end_headers()
       self.wfile.write(data)
-      return
+      return None
     return self._json(404, {"ok": False, "error": "not_found", "path": path})
 
   def do_POST(self):
+    try:
+      return self._do_POST()
+    except MetadataStoreError:
+      return self._json(503, {"ok": False, "error": "metadata_store_unavailable"})
+
+  def _do_POST(self):
     path = normalize_api_path(urllib.parse.urlparse(self.path).path)
     try:
       length = int(self.headers.get("Content-Length") or 0)
