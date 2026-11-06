@@ -107,14 +107,17 @@ def save_upload(filename: str, raw: bytes, media_type: str | None = None) -> dic
     return {"ok": False, "error": "file_too_large", "max_bytes": MAX_UPLOAD_BYTES}
   safe = re.sub(r"[^a-zA-Z0-9._-]+", "_", (filename or "file").strip())[:120] or "file"
   fid = secrets.token_hex(12)
-  dest = UPLOAD_DIR / f"{fid}__{safe}"
-  # Containment check (CodeQL py/path-injection): the resolved target must stay inside UPLOAD_DIR.
-  upload_root = UPLOAD_DIR.resolve()
-  resolved = dest.resolve()
-  if upload_root not in resolved.parents:
-    return {"ok": False, "error": "invalid_filename"}
-  resolved.write_bytes(raw)
-  dest = resolved
+  # The caller's filename is display metadata only and never forms part of a
+  # filesystem path (CodeQL py/path-injection): the payload is stored under the
+  # server-generated id, and the record keeps the configured UPLOAD_DIR path.
+  # Exclusive create never follows or overwrites an entry already at that path
+  # (a planted link or an id collision); the upload fails closed instead.
+  dest = UPLOAD_DIR / fid
+  try:
+    with dest.open("xb") as fh:
+      fh.write(raw)
+  except FileExistsError:
+    return {"ok": False, "error": "upload_conflict"}
   kind = "image" if (media_type or "").startswith("image/") or safe.lower().endswith((".png",".jpg",".jpeg",".gif",".webp",".bmp",".svg")) else "file"
   excerpt = None
   ext = Path(safe).suffix.lower()
