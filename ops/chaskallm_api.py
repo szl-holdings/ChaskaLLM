@@ -108,7 +108,13 @@ def save_upload(filename: str, raw: bytes, media_type: str | None = None) -> dic
   safe = re.sub(r"[^a-zA-Z0-9._-]+", "_", (filename or "file").strip())[:120] or "file"
   fid = secrets.token_hex(12)
   dest = UPLOAD_DIR / f"{fid}__{safe}"
-  dest.write_bytes(raw)
+  # Containment check (CodeQL py/path-injection): the resolved target must stay inside UPLOAD_DIR.
+  upload_root = UPLOAD_DIR.resolve()
+  resolved = dest.resolve()
+  if upload_root not in resolved.parents:
+    return {"ok": False, "error": "invalid_filename"}
+  resolved.write_bytes(raw)
+  dest = resolved
   kind = "image" if (media_type or "").startswith("image/") or safe.lower().endswith((".png",".jpg",".jpeg",".gif",".webp",".bmp",".svg")) else "file"
   excerpt = None
   ext = Path(safe).suffix.lower()
@@ -587,6 +593,10 @@ def whisper(prompt: str, n_predict: int = 64, model_key: str | None = None) -> d
       "--temp", "0.7", "-p", prompt_fmt,
       "-st", "--simple-io", "--no-display-prompt", "--no-jinja", "--perf", "--log-disable",
     ]
+
+  # argv list, shell=False: user text is only ever an argument *value* to -p/-sys.
+  # Strip NUL bytes, which subprocess rejects with ValueError.
+  cmd = [c.replace("\x00", "") for c in cmd]
 
   if not GEN_SLOTS.acquire(timeout=GEN_WAIT_S):
     return {"ok": False, "error": "busy", "model_key": key, "product": "ChaskaLLM", "gpu": False}
