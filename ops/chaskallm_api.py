@@ -13,6 +13,7 @@ import os
 import re
 import secrets
 import subprocess
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -107,14 +108,17 @@ def save_upload(filename: str, raw: bytes, media_type: str | None = None) -> dic
     return {"ok": False, "error": "file_too_large", "max_bytes": MAX_UPLOAD_BYTES}
   safe = re.sub(r"[^a-zA-Z0-9._-]+", "_", (filename or "file").strip())[:120] or "file"
   fid = secrets.token_hex(12)
-  dest = UPLOAD_DIR / f"{fid}__{safe}"
-  # Containment check (CodeQL py/path-injection): the resolved target must stay inside UPLOAD_DIR.
-  upload_root = UPLOAD_DIR.resolve()
-  resolved = dest.resolve()
-  if upload_root not in resolved.parents:
+  # Containment check (CodeQL py/path-injection): canonicalise the target with
+  # os.path.realpath and only write through the checked string, which must stay
+  # inside UPLOAD_DIR. The sanitised name cannot contain separators; this is
+  # defence in depth.
+  upload_root = os.path.realpath(str(UPLOAD_DIR))
+  dest_path = os.path.realpath(os.path.join(upload_root, f"{fid}__{safe}"))
+  if not dest_path.startswith(upload_root + os.sep):
     return {"ok": False, "error": "invalid_filename"}
-  resolved.write_bytes(raw)
-  dest = resolved
+  with open(dest_path, "wb") as fh:
+    fh.write(raw)
+  dest = Path(dest_path)
   kind = "image" if (media_type or "").startswith("image/") or safe.lower().endswith((".png",".jpg",".jpeg",".gif",".webp",".bmp",".svg")) else "file"
   excerpt = None
   ext = Path(safe).suffix.lower()
@@ -526,7 +530,7 @@ def generate_image(prompt: str, width: int = 1024, height: int = 1024, steps: in
   try:
     (IMAGE_DIR / name).write_bytes(raw)
   except Exception:
-    pass
+    pass  # mirror copy is best-effort; the upload record above is the source of truth
   return {
     "ok": True,
     "capability": "chaska.image.fast",
@@ -576,32 +580,34 @@ def whisper(prompt: str, n_predict: int = 64, model_key: str | None = None) -> d
     "Mention GPU only if asked. Only lead with YES/NO when the user asks a yes/no question."
   )
 
-  if key in ("3b", "4b", "default", "7b"):
-    cmd = [
-      str(CLI), "-m", str(model),
-      "-ngl", "0", "-t", str(threads), "-c", str(ctx), "-n", str(n_predict),
-      "--temp", "0.7",
-      "-sys", system,
-      "-p", prompt,
-      "-st", "--simple-io", "--jinja", "--no-display-prompt", "--perf", "--log-disable",
-    ]
-  else:
-    prompt_fmt = f"User: {prompt}\nAssistant:"
-    cmd = [
-      str(CLI), "-m", str(model),
-      "-ngl", "0", "-t", str(threads), "-c", str(ctx), "-n", str(n_predict),
-      "--temp", "0.7", "-p", prompt_fmt,
-      "-st", "--simple-io", "--no-display-prompt", "--no-jinja", "--perf", "--log-disable",
-    ]
-
-  # argv list, shell=False: user text is only ever an argument *value* to -p/-sys.
-  # Strip NUL bytes, which subprocess rejects with ValueError.
-  cmd = [c.replace("\x00", "") for c in cmd]
+  # The user prompt is never placed on the command line: it is written to a private
+  # temp file and handed to llama-cli with -f, so request bytes cannot be parsed as
+  # flags and are not visible in the process table.
+  jinja_lane = key in ("3b", "4b", "default", "7b")
+  prompt_text = prompt if jinja_lane else f"User: {prompt}\nAssistant:"
+  cmd = [
+    str(CLI), "-m", str(model),
+    "-ngl", "0", "-t", str(threads), "-c", str(ctx), "-n", str(n_predict),
+    "--temp", "0.7",
+  ]
+  if jinja_lane:
+    cmd += ["-sys", system]
+  cmd += ["-st", "--simple-io", "--no-display-prompt", "--perf", "--log-disable"]
+  cmd += ["--jinja"] if jinja_lane else ["--no-jinja"]
 
   if not GEN_SLOTS.acquire(timeout=GEN_WAIT_S):
     return {"ok": False, "error": "busy", "model_key": key, "product": "ChaskaLLM", "gpu": False}
   try:
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s)
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", prefix="chaska-prompt-", suffix=".txt", delete=False) as pf:
+      pf.write(prompt_text)
+      prompt_path = pf.name
+    try:
+      proc = subprocess.run(cmd + ["-f", prompt_path], capture_output=True, text=True, timeout=timeout_s)
+    finally:
+      try:
+        os.unlink(prompt_path)
+      except OSError:
+        pass  # best-effort cleanup of the private prompt file
   except subprocess.TimeoutExpired:
     return {"ok": False, "error": "timeout", "model_key": key, "product": "ChaskaLLM", "gpu": False}
   finally:
@@ -632,12 +638,11 @@ def tokenless_prove() -> dict:
   """Report local marker/presence checks and scoreboard status; no LLM or crypto."""
   cov = json.loads(COVERAGE.read_text()) if COVERAGE.is_file() else {}
   loop = json.loads(LOOP_SB.read_text()) if LOOP_SB.is_file() else {}
-  qich = {}
   if QICH.is_file():
     try:
-      qich = json.loads(QICH.read_text())
+      json.loads(QICH.read_text())  # validate the scoreboard parses; contents are not needed here
     except Exception:
-      qich = {"raw_present": True}
+      pass  # a malformed scoreboard still counts as present for the marker checks below
   seats = cov.get("think_seats") or []
   living = (cov.get("living_wire_on_disk") or {}).get("count")
   wired_after = cov.get("wired_after")
@@ -689,7 +694,7 @@ def tokenless_prove() -> dict:
     pub.parent.mkdir(parents=True, exist_ok=True)
     pub.write_text(PROVE.read_text())
   except Exception:
-    pass
+    pass  # publishing the proof file is best-effort; the response body is still returned
   return body
 
 
