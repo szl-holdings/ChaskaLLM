@@ -1,10 +1,10 @@
 """A NUL byte in a caller prompt must not crash generation.
 
 Run: python3 -m unittest discover -s tests -v
-Pins the NUL-byte handling added by direct commit 6597727: subprocess refuses
-argv strings containing NUL ("ValueError: embedded null byte"), so whisper()
-strips them before launching llama-cli. The argv is handed to a real child
-process (the current Python, not llama.cpp), so the OS argv rules apply.
+Subprocess refuses argv strings containing NUL. Prompts travel through a
+private binary file, preserving NUL bytes without putting them in argv. The
+argv is handed to a real child process (Python, not llama.cpp), so OS argv
+rules still apply.
 No model, llama.cpp binary or network is needed.
 """
 from __future__ import annotations
@@ -36,10 +36,12 @@ class CliArgvTest(unittest.TestCase):
     cli.write_bytes(b"x")
     model.write_bytes(b"x")
     seen: list[list[str]] = []
+    payloads: list[bytes] = []
     real_run = subprocess.run
 
     def run_child(cmd, **kwargs):
       seen.append(list(cmd))
+      payloads.append(Path(cmd[cmd.index("--binary-file") + 1]).read_bytes())
       # Same argv to a real child process, so the OS argv rules (no NUL bytes) apply.
       return real_run([sys.executable, "-c", "print('Assistant: ok')", *cmd[1:]], **kwargs)
 
@@ -50,7 +52,8 @@ class CliArgvTest(unittest.TestCase):
     self.assertEqual(out["text"], "ok")
     self.assertEqual(len(seen), 1)
     self.assertNotIn("\x00", "".join(seen[0]))
-    self.assertEqual(seen[0][seen[0].index("-p") + 1], "hello")
+    self.assertNotIn("-p", seen[0])
+    self.assertEqual(payloads, [b"hel\x00lo"])
 
 
 if __name__ == "__main__":
