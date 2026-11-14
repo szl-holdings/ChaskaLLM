@@ -42,6 +42,9 @@ Proof: [a11oy.net](https://a11oy.net)
 - Runtime: llama.cpp `-ngl 0` (CPU)
 - Naming lock: **ChaskaLLM** = mouth · **ChaskaClaw** = house OpenShell twin
 
+Caller prompts use llama.cpp's binary prompt-file option. See
+[the prompt transport contract and deployment compatibility requirements](docs/CLI-PROMPT-TRANSPORT.md).
+
 ## License
 
 Code and weights are licensed separately, as `NOTICE` explains:

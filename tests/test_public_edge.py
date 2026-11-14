@@ -181,6 +181,41 @@ class PublicEdgeTest(unittest.TestCase):
     self.assertEqual((status, out.get("error")), (503, "7b_weights_not_ready"))
     self.assertEqual(self.gen_calls, [])
 
+  def test_missing_7b_image_caption_rejects_before_provider_work(self) -> None:
+    _, minted = self.post("/v1/keys", {"label": "missing image-caption lane"})
+    headers = {**PUBLIC, "Authorization": f"Bearer {minted['key']}"}
+    missing = Path(_TMP) / "missing-image-caption-7b.gguf"
+    with mock.patch.dict(api.MODELS, {"7b": missing}):
+      for route, field in (("/v1/chat", "model"), ("/api/v1/chat", "model_key")):
+        for image_request in ({"prompt": "draw a cat"}, {"prompt": "a cat", "image": True}):
+          with self.subTest(route=route, field=field, request=image_request):
+            status, out = self.post(route, {**image_request, field: "\t7B "}, headers)
+            self.assertEqual((status, out.get("error")), (503, "7b_weights_not_ready"))
+    self.assertEqual(self.gen_calls, [])
+    self.assertEqual(self.nvidia_calls, 0)
+
+  def test_anonymous_7b_image_caption_rejects_before_provider_work(self) -> None:
+    with mock.patch.object(api, "IMAGE_PER_IP_HOUR", 20):
+      for image_request in ({"prompt": "draw a cat"}, {"prompt": "a cat", "image": True}):
+        for field in ("model", "model_key"):
+          with self.subTest(field=field, request=image_request):
+            status, out = self.post("/v1/chat", {**image_request, field: " 7B "}, PUBLIC)
+            self.assertEqual((status, out.get("error")), (403, "api_key_required_for_7b"))
+    self.assertEqual(self.gen_calls, [])
+    self.assertEqual(self.nvidia_calls, 0)
+
+  def test_ready_keyed_7b_image_caption_keeps_selected_lane(self) -> None:
+    seven = Path(_TMP) / "ready-image-caption-7b.gguf"
+    seven.write_bytes(b"fixture only")
+    _, minted = self.post("/v1/keys", {"label": "ready image-caption lane"})
+    headers = {**PUBLIC, "Authorization": f"Bearer {minted['key']}"}
+    with mock.patch.dict(api.MODELS, {"7b": seven}):
+      status, out = self.post("/v1/chat", {"prompt": "draw a cat", "model": " 7B "}, headers)
+    self.assertEqual(status, 200, out)
+    self.assertEqual(out["model_key"], "7b")
+    self.assertEqual([call["model_key"] for call in self.gen_calls], ["7b"])
+    self.assertEqual(self.nvidia_calls, 1)
+
   def test_non_object_json_is_rejected_without_side_effects(self) -> None:
     with mock.patch.object(api, "mint_api_key") as mint, mock.patch.object(api, "tokenless_prove") as prove:
       for path in ("/v1/chat", "/v1/images", "/v1/keys", "/v1/tokenless/prove"):
